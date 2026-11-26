@@ -1,2 +1,3 @@
-# The web panel is one self-contained page; keep it out of the language bar
-host/*.html linguist-detectable=false
+# The web panel is one self-contained page served by the bridge: keep it
+# out of the language statistics (both attributes, for older linguist)
+host/*.html linguist-vendored linguist-detectable=false

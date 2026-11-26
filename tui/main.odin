@@ -195,6 +195,7 @@ App :: struct {
 	last_cfg:  time.Tick,
 	lim_on:    bool,
 	help:      bool, // F1 overlay
+	zoom:      int,  // history points averaged into one graph column half (PgUp / PgDn)
 	// CSV recording (F2)
 	rec:       ^os.File,
 	rec_path:  string,
@@ -460,7 +461,14 @@ draw_selected :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
 	vmax := app.vdda if app.vdda > 0 else 3.3
 	if inner.height >= 2 {
 		grad := [?]hnoss.Rgb{hnoss.hex(GOOD), hnoss.hex(ACCENT), hnoss.hex(WARM)}
-		hnoss.graph(ui, inner, c.hist[:], {max_value = vmax, gradient = grad[:]})
+		data := zoomed(c.hist[:], app.zoom)
+		hnoss.graph(ui, inner, data, {max_value = vmax, gradient = grad[:]})
+		// how much time the graph spans, from the actual poll rate
+		if app.rate > 0 {
+			span := f64(inner.width * 2 * app.zoom) / f64(app.rate)
+			tag := fmt.tprintf(" ×%d · %s ", app.zoom, span_text(span))
+			hnoss.label(ui, {inner.x + inner.width - len(tag) - 1, inner.y + inner.height, len(tag), 1}, dim(tag), wrap = .Clip)
+		}
 	}
 }
 
@@ -468,6 +476,7 @@ HELP_KEYS :: [?][2]string{
 	{"Enter", "send the command in the console"},
 	{"↑ ↓", "command history"},
 	{"Tab / Shift+Tab", "select channel"},
+	{"PgUp / PgDn", "longer / shorter graph time span"},
 	{"F1", "this help"},
 	{"F2", "start / stop CSV recording"},
 	{"Esc", "close help · quit"},
@@ -502,6 +511,23 @@ draw_help :: proc(ui: ^hnoss.Ui, area: hnoss.Rect, app: ^App) {
 	for c in HELP_CMDS { line(ui, inner, &row, c[0], c[1], 26) }
 }
 
+// Every `zoom` points averaged into one, newest last
+zoomed :: proc(hist: []f64, zoom: int) -> []f64 {
+	if zoom <= 1 { return hist }
+	out := make([dynamic]f64, context.temp_allocator)
+	for i := len(hist) % zoom; i + zoom <= len(hist); i += zoom {
+		sum := 0.0
+		for v in hist[i:i + zoom] { sum += v }
+		append(&out, sum / f64(zoom))
+	}
+	return out[:]
+}
+
+span_text :: proc(s: f64) -> string {
+	if s < 120 { return fmt.tprintf("%.0f s", s) }
+	return fmt.tprintf("%.1f min", s / 60)
+}
+
 draw_console :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
 	inner := hnoss.box(ui, r, "[b]SCPI console[/]", {focused = true})
 	line := hnoss.cut_bottom(&inner, 1)
@@ -518,7 +544,7 @@ main :: proc() {
 
 	path := os.args[1] if len(os.args) > 1 else "/dev/ttyACM0"
 	link := Link{serial_path = strings.clone_to_cstring(path)}
-	app := App{}
+	app := App{zoom = 1}
 	app.log.max_lines = 500
 	app.rate_tick = time.tick_now()
 	start_tick = time.tick_now()
@@ -601,6 +627,10 @@ main :: proc() {
 				break loop
 			case hnoss.is_key(ev, .F1):
 				app.help = !app.help
+			case hnoss.is_key(ev, .Page_Up):
+				app.zoom = min(app.zoom * 2, 64)
+			case hnoss.is_key(ev, .Page_Down):
+				app.zoom = max(app.zoom / 2, 1)
 			case hnoss.is_key(ev, .F2):
 				toggle_record(&app)
 			case hnoss.is_key(ev, .Tab):

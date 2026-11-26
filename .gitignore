@@ -1,0 +1,6 @@
+.venv/
+build/
+backup/
+__pycache__/
+*.pyc
+tui/nucleolab-tui

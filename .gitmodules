@@ -1,0 +1,9 @@
+[submodule "third_party/cmsis_core"]
+	path = third_party/cmsis_core
+	url = https://github.com/STMicroelectronics/cmsis-core
+[submodule "third_party/cmsis_device_l4"]
+	path = third_party/cmsis_device_l4
+	url = https://github.com/STMicroelectronics/cmsis-device-l4
+[submodule "tui/libs/hnoss"]
+	path = tui/libs/hnoss
+	url = https://github.com/Huseynteymurzade28/hnoss

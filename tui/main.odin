@@ -34,7 +34,7 @@ DIM    :: 0x7a8494
 // --- Link: TCP to the bridge, or the serial port ---------------------------------------
 
 Link_Kind :: enum { None, Bridge, Serial }
-Txn_Kind :: enum { Poll, User }
+Txn_Kind :: enum { Poll, Config, User }
 
 Link :: struct {
 	kind:        Link_Kind,
@@ -175,6 +175,8 @@ HISTORY :: 4096
 Chan :: struct {
 	volts:     f64,
 	conn:      bool,
+	fail:      bool, // outside its limits (CALC:LIM:FAIL?)
+	low, upp:  f64,  // its limits
 	hist:      [dynamic]f64,
 	min, max:  f64,
 }
@@ -190,6 +192,8 @@ App :: struct {
 	history:   [dynamic]string,
 	hist_pos:  int,
 	last_poll: time.Tick,
+	last_cfg:  time.Tick,
+	lim_on:    bool,
 	polls:     int,
 	rate:      int,
 	rate_tick: time.Tick,
@@ -207,24 +211,26 @@ logf :: proc(app: ^App, format: string, args: ..any) {
 	hnoss.log_append(&app.log, fmt.tprintf("%s %s", stamp(), fmt.tprintf(format, ..args)))
 }
 
-// "v1,...,v6;vdda"
+POLL_QUERY :: "MEAS:VOLT? (@1:6);:SYST:VDDA?;:CALC:LIM:FAIL?;:ROUT:CHAN:EVEN?"
+CONFIG_QUERY :: "CALC:LIM?;:CALC:LIM:LOW? (@1:6);:CALC:LIM:UPP? (@1:6)"
+
+// "v1,...,v6;vdda;fail1,...,fail6;ch,what,ms"
 on_poll :: proc(app: ^App, lines: []string) {
 	if len(lines) == 0 { return }
 	parts := strings.split(lines[0], ";", context.temp_allocator)
 	vals := strings.split(parts[0], ",", context.temp_allocator)
 	if len(vals) != CHANNELS { return }
 	if len(parts) > 1 { app.vdda, _ = strconv.parse_f64(parts[1]) }
+	if len(parts) > 2 {
+		for f, i in strings.split(parts[2], ",", context.temp_allocator) {
+			if i < CHANNELS { app.ch[i].fail = f == "1" }
+		}
+	}
+	if len(parts) > 3 { on_event(app, parts[3]) }
 	for v, i in vals {
 		x, ok := strconv.parse_f64(v)
 		c := &app.ch[i]
 		conn := ok && x < 1e30
-		if app.have && conn != c.conn {
-			if conn {
-				logf(app, "[#%06x]● CH%d %s (%s) plugged in[/]", GOOD, i + 1, NAMES[i], PINS[i])
-			} else {
-				logf(app, "[#%06x]○ CH%d %s (%s) unplugged[/]", WARM, i + 1, NAMES[i], PINS[i])
-			}
-		}
 		if conn && (!c.conn || !app.have) { c.min, c.max = x, x }
 		c.conn = conn
 		if conn {
@@ -237,6 +243,39 @@ on_poll :: proc(app: ^App, lines: []string) {
 	}
 	app.have = true
 	app.polls += 1
+}
+
+// One entry of the board's event log: "<channel>,<what>,<ms since boot>"
+on_event :: proc(app: ^App, ev: string) {
+	f := strings.split(ev, ",", context.temp_allocator)
+	if len(f) != 3 { return }
+	ch, _ := strconv.parse_int(f[0])
+	what, _ := strconv.parse_int(f[1])
+	ms, _ := strconv.parse_int(f[2])
+	if ch < 1 || ch > CHANNELS { return }
+	i := ch - 1
+	at := dim(fmt.tprintf("(board %.1fs)", f64(ms) / 1000))
+	switch what {
+	case 0: logf(app, "[#%06x]○ CH%d %s (%s) unplugged[/] %s", WARM, ch, NAMES[i], PINS[i], at)
+	case 1: logf(app, "[#%06x]● CH%d %s (%s) plugged in[/] %s", GOOD, ch, NAMES[i], PINS[i], at)
+	case 2: logf(app, "[#%06x]⚠ CH%d %s out of limits[/] %s", WARM, ch, NAMES[i], at)
+	case 3: logf(app, "[#%06x]✓ CH%d %s back within limits[/] %s", GOOD, ch, NAMES[i], at)
+	}
+}
+
+// "on;low1,...,low6;upp1,...,upp6"
+on_config :: proc(app: ^App, lines: []string) {
+	if len(lines) == 0 { return }
+	parts := strings.split(lines[0], ";", context.temp_allocator)
+	if len(parts) != 3 { return }
+	app.lim_on = parts[0] == "1"
+	lows := strings.split(parts[1], ",", context.temp_allocator)
+	upps := strings.split(parts[2], ",", context.temp_allocator)
+	if len(lows) != CHANNELS || len(upps) != CHANNELS { return }
+	for i in 0 ..< CHANNELS {
+		app.ch[i].low, _ = strconv.parse_f64(lows[i])
+		app.ch[i].upp, _ = strconv.parse_f64(upps[i])
+	}
 }
 
 on_user :: proc(app: ^App, cmd: string, lines: []string) {
@@ -334,10 +373,12 @@ draw_channels :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
 		state: string
 		switch {
 		case !app.have:          state = dim("…")
+		case c.conn && c.fail:   state = fmt.tprintf("[#%06x]⚠ out of limits[/]", WARM)
 		case c.conn:             state = fmt.tprintf("[#%06x]● connected[/]", GOOD)
 		case:                    state = dim("○ empty")
 		}
-		value := fmt.tprintf("[b]%.3f V[/]", c.volts) if c.conn else dim("— V")
+		value := dim("— V")
+		if c.conn { value = fmt.tprintf("[b #%06x]%.3f V[/]", WARM, c.volts) if c.fail else fmt.tprintf("[b]%.3f V[/]", c.volts) }
 		hnoss.label(ui, hnoss.cut_left(&row, 2), mark)
 		hnoss.label(ui, hnoss.cut_left(&row, 8), name, wrap = .Clip)
 		hnoss.label(ui, hnoss.cut_left(&row, 7), dim(PINS[i]), wrap = .Clip)
@@ -359,9 +400,14 @@ draw_selected :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
 	inner := hnoss.box(ui, r, fmt.tprintf("[b]CH%d · %s[/] %s", app.sel + 1, NAMES[app.sel], dim(PINS[app.sel])))
 	top := hnoss.cut_top(&inner, GLYPH_H + 2)
 	if c.conn {
-		big_text(ui, top, fmt.tprintf("%.3fV", c.volts), ACCENT)
+		big_text(ui, top, fmt.tprintf("%.3fV", c.volts), WARM if c.fail else ACCENT)
 		mm := hnoss.cut_top(&inner, 1)
-		hnoss.label(ui, mm, dim(fmt.tprintf("min %.3f V · max %.3f V · span %.3f V", c.min, c.max, c.max - c.min)), align = .Center, wrap = .Clip)
+		stats := fmt.tprintf("min %.3f V · max %.3f V · span %.3f V", c.min, c.max, c.max - c.min)
+		if app.lim_on {
+			lim := fmt.tprintf("limits %.3f – %.3f V", c.low, c.upp)
+			stats = fmt.tprintf("%s · %s", stats, fmt.tprintf("[#%06x]%s[/]", WARM, lim) if c.fail else lim)
+		}
+		hnoss.label(ui, mm, dim(stats), align = .Center, wrap = .Clip)
 	} else {
 		msg := "empty · plug a signal in, it is detected automatically"
 		hnoss.label(ui, hnoss.center(top, len(msg), 1), dim(msg), align = .Center, wrap = .Clip)
@@ -425,7 +471,8 @@ main :: proc() {
 		// traffic: user commands first, otherwise poll the channels
 		if link_poll(&link) {
 			switch link.txn {
-			case .Poll: on_poll(&app, link.lines[:])
+			case .Poll:   on_poll(&app, link.lines[:])
+			case .Config: on_config(&app, link.lines[:])
 			case .User: on_user(&app, link.user_cmd, link.lines[:])
 			}
 		}
@@ -435,9 +482,12 @@ main :: proc() {
 				delete(link.user_cmd)
 				link.user_cmd = cmd
 				link_send(&link, .User, fmt.tprintf("%s\nSYST:ERR?", cmd))
+			} else if time.tick_since(app.last_cfg) > time.Second {
+				app.last_cfg = time.tick_now()
+				link_send(&link, .Config, CONFIG_QUERY)
 			} else if time.tick_since(app.last_poll) > POLL_INTERVAL {
 				app.last_poll = time.tick_now()
-				link_send(&link, .Poll, "MEAS:VOLT? (@1:6);:SYST:VDDA?")
+				link_send(&link, .Poll, POLL_QUERY)
 			}
 		}
 		if time.tick_since(app.rate_tick) >= time.Second {

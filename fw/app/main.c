@@ -29,7 +29,7 @@ static const scpi_cmd_t cmds[] = {
 };
 
 static const scpi_cmd_t *const tables[] = {cmds, lab_cmds, dvm_cmds, NULL};
-static void dev_reset(void) { led_set(false); lab_reset(); }
+static void dev_reset(void) { led_set(false); lab_reset(); dvm_reset(); }
 static const scpi_port_t port = {uart_write, dev_reset, lab_selftest, idn, lab_wait};
 
 /* A fault (e.g. a supply glitch while wiring) restarts the board instead of

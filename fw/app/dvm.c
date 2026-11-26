@@ -14,7 +14,7 @@
 #define PROBE_MS    20u     /* one channel per tick */
 #define DEBOUNCE    2       /* equal probes in a row before the flag flips */
 #define OPER_CHAN   0x200u  /* STATus:OPERation bit 9: a channel was (dis)connected */
-#define AVERAGES    64u
+#define AVERAGES    64u     /* default of SENS:VOLT:AVER:COUN */
 #define BG_AVERAGES 16u     /* background samples: keep one tick short */
 #define VDDA_MS     1000u   /* background VDDA refresh */
 
@@ -22,7 +22,7 @@ static const char *const names[ADC_CHANNELS + 1] = {"", "A0", "A1", "A2", "A3", 
 static bool conn[ADC_CHANNELS + 1];
 static int streak[ADC_CHANNELS + 1], spread[ADC_CHANNELS + 1];
 static uint32_t changes, next_ms, vdda_ms;
-static unsigned turn = 1;
+static unsigned turn = 1, averages = AVERAGES;
 static struct { float min, max; double sum; uint32_t n; } st[ADC_CHANNELS + 1];
 
 static bool adc_busy(void) { return scope_state() == SC_ARMED; }
@@ -41,6 +41,12 @@ static void sample(unsigned ch)
     if (!st[ch].n || v > st[ch].max) st[ch].max = v;
     st[ch].sum = st[ch].n ? st[ch].sum + v : v;
     st[ch].n++;
+}
+
+/* *RST: settings back to their defaults */
+void dvm_reset(void)
+{
+    averages = AVERAGES;
 }
 
 void dvm_init(void)
@@ -83,7 +89,7 @@ void dvm_measure(scpi_t *s)
     if (adc_busy()) { scpi_error(s, -221); return; }
     float lsb = vdda_measure() / 4096.0f;
     for (unsigned c = 1; c <= ADC_CHANNELS; c++)
-        if (m & (1u << c)) scpi_out_num(s, connected(c) ? adc_read_dc(c, AVERAGES) * lsb : NAN);
+        if (m & (1u << c)) scpi_out_num(s, connected(c) ? adc_read_dc(c, averages) * lsb : NAN);
 }
 
 static void q_conn(scpi_t *s)
@@ -145,6 +151,13 @@ static void c_sclr(scpi_t *s)
             if (m & (1u << c)) st[c].n = 0;
 }
 
+static void c_aver(scpi_t *s)
+{
+    double x;
+    if (scpi_nparams(s, 1, 1) && scpi_number(s, 0, NULL, 1, 256, AVERAGES, &x)) averages = (unsigned)x;
+}
+static void q_aver(scpi_t *s) { if (scpi_nparams(s, 0, 0)) scpi_out_int(s, (int32_t)averages); }
+
 static void q_probe(scpi_t *s)
 {
     uint32_t m;
@@ -161,5 +174,6 @@ const scpi_cmd_t dvm_cmds[] = {
     {"CALCulate:AVERage:MINimum?", q_smin}, {"CALCulate:AVERage:MAXimum?", q_smax},
     {"CALCulate:AVERage[:AVERage]?", q_savg}, {"CALCulate:AVERage:COUNt?", q_scnt},
     {"CALCulate:AVERage:CLEar", c_sclr},
+    {"[SENSe]:VOLTage:AVERage:COUNt", c_aver}, {"[SENSe]:VOLTage:AVERage:COUNt?", q_aver},
     {NULL, NULL}
 };

@@ -14,6 +14,9 @@
 #define PROBE_MS    20u     /* one channel per tick */
 #define DEBOUNCE    2       /* equal probes in a row before the flag flips */
 #define OPER_CHAN   0x200u  /* STATus:OPERation bit 9: a channel was (dis)connected */
+#define QUES_LIMIT  0x400u  /* STATus:QUEStionable bit 10: a channel is outside its limits */
+#define LIM_LOW     0.0f    /* default limits: the whole input range */
+#define LIM_UPP     3.6f
 #define AVERAGES    64u     /* default of SENS:VOLT:AVER:COUN */
 #define BG_AVERAGES 16u     /* background samples: keep one tick short */
 #define VDDA_MS     1000u   /* background VDDA refresh */
@@ -24,6 +27,8 @@ static int streak[ADC_CHANNELS + 1], spread[ADC_CHANNELS + 1];
 static uint32_t changes, next_ms, vdda_ms;
 static unsigned turn = 1, averages = AVERAGES;
 static struct { float min, max; double sum; uint32_t n; } st[ADC_CHANNELS + 1];
+static float last[ADC_CHANNELS + 1], lim_low[ADC_CHANNELS + 1], lim_upp[ADC_CHANNELS + 1];
+static bool lim_on, fail[ADC_CHANNELS + 1];
 
 static bool adc_busy(void) { return scope_state() == SC_ARMED; }
 static bool connected(unsigned ch) { return conn[ch]; }
@@ -41,17 +46,31 @@ static void sample(unsigned ch)
     if (!st[ch].n || v > st[ch].max) st[ch].max = v;
     st[ch].sum = st[ch].n ? st[ch].sum + v : v;
     st[ch].n++;
+    last[ch] = v;
+}
+
+/* Limit state from the latest background sample; QUES bit 10 follows it */
+static void check_limits(scpi_t *s, unsigned ch)
+{
+    fail[ch] = lim_on && conn[ch] && (last[ch] < lim_low[ch] || last[ch] > lim_upp[ch]);
+    bool any = false;
+    for (unsigned c = 1; c <= ADC_CHANNELS; c++) any |= fail[c];
+    if (any && !(s->ques.cond & QUES_LIMIT)) s->ques.event |= QUES_LIMIT;
+    s->ques.cond = any ? s->ques.cond | QUES_LIMIT : s->ques.cond & ~QUES_LIMIT;
 }
 
 /* *RST: settings back to their defaults */
 void dvm_reset(void)
 {
     averages = AVERAGES;
+    lim_on = false;
+    for (unsigned c = 1; c <= ADC_CHANNELS; c++) { lim_low[c] = LIM_LOW; lim_upp[c] = LIM_UPP; fail[c] = false; }
 }
 
 void dvm_init(void)
 {
     for (unsigned c = 1; c <= ADC_CHANNELS; c++) conn[c] = probe(c);
+    dvm_reset();
 }
 
 void dvm_poll(scpi_t *s)
@@ -71,6 +90,7 @@ void dvm_poll(scpi_t *s)
         streak[turn] = 0;
     }
     if (conn[turn]) sample(turn);
+    check_limits(s, turn);
 }
 
 /* Optional channel list parameter; default all channels */
@@ -168,6 +188,41 @@ static void c_aver(scpi_t *s)
 }
 static void q_aver(scpi_t *s) { if (scpi_nparams(s, 0, 0)) scpi_out_int(s, (int32_t)averages); }
 
+/* CALC:LIM:LOW|UPP <volts>[,(@list)] */
+static void set_limit(scpi_t *s, float *lim, double def)
+{
+    double x;
+    uint32_t m = ALL_CH;
+    if (!scpi_nparams(s, 1, 2) || !scpi_number(s, 0, "V", 0, 3.6, def, &x)) return;
+    if (s->nparam > 1 && !scpi_chanlist(s, 1, 1, ADC_CHANNELS, &m)) return;
+    for (unsigned c = 1; c <= ADC_CHANNELS; c++)
+        if (m & (1u << c)) lim[c] = (float)x;
+}
+static void get_limit(scpi_t *s, const float *lim)
+{
+    uint32_t m;
+    if (chans(s, &m))
+        for (unsigned c = 1; c <= ADC_CHANNELS; c++)
+            if (m & (1u << c)) scpi_out_num(s, lim[c]);
+}
+static void c_llow(scpi_t *s) { set_limit(s, lim_low, LIM_LOW); }
+static void c_lupp(scpi_t *s) { set_limit(s, lim_upp, LIM_UPP); }
+static void q_llow(scpi_t *s) { get_limit(s, lim_low); }
+static void q_lupp(scpi_t *s) { get_limit(s, lim_upp); }
+static void c_lstat(scpi_t *s)
+{
+    bool v;
+    if (scpi_nparams(s, 1, 1) && scpi_bool(s, 0, &v)) lim_on = v;
+}
+static void q_lstat(scpi_t *s) { if (scpi_nparams(s, 0, 0)) scpi_out_int(s, lim_on); }
+static void q_lfail(scpi_t *s)
+{
+    uint32_t m;
+    if (chans(s, &m))
+        for (unsigned c = 1; c <= ADC_CHANNELS; c++)
+            if (m & (1u << c)) scpi_out_int(s, fail[c]);
+}
+
 static void q_probe(scpi_t *s)
 {
     uint32_t m;
@@ -185,6 +240,10 @@ const scpi_cmd_t dvm_cmds[] = {
     {"CALCulate:AVERage:MINimum?", q_smin}, {"CALCulate:AVERage:MAXimum?", q_smax},
     {"CALCulate:AVERage[:AVERage]?", q_savg}, {"CALCulate:AVERage:COUNt?", q_scnt},
     {"CALCulate:AVERage:CLEar", c_sclr},
+    {"CALCulate:LIMit:LOWer[:DATA]", c_llow}, {"CALCulate:LIMit:LOWer[:DATA]?", q_llow},
+    {"CALCulate:LIMit:UPPer[:DATA]", c_lupp}, {"CALCulate:LIMit:UPPer[:DATA]?", q_lupp},
+    {"CALCulate:LIMit[:STATe]", c_lstat}, {"CALCulate:LIMit[:STATe]?", q_lstat},
+    {"CALCulate:LIMit:FAIL?", q_lfail},
     {"[SENSe]:VOLTage:AVERage:COUNt", c_aver}, {"[SENSe]:VOLTage:AVERage:COUNt?", q_aver},
     {NULL, NULL}
 };

@@ -9,7 +9,7 @@
 #include <math.h>
 
 #define ALL_CH      0x7Eu   /* bits 1..6 */
-#define SPREAD_MIN  300     /* codes: probe spread above this = floating
+#define SPREAD_MIN  300     /* default threshold, codes: probe spread above it = floating
                                    (measured: driven ~0, floating 700-800) */
 #define PROBE_MS    20u     /* one channel per tick */
 #define DEBOUNCE    2       /* equal probes in a row before the flag flips */
@@ -25,7 +25,8 @@ static const char *const names[ADC_CHANNELS + 1] = {"", "A0", "A1", "A2", "A3", 
 static bool conn[ADC_CHANNELS + 1];
 static int streak[ADC_CHANNELS + 1], spread[ADC_CHANNELS + 1];
 static uint32_t changes, next_ms, vdda_ms;
-static unsigned turn = 1, averages = AVERAGES;
+static unsigned turn = 1, averages = AVERAGES, threshold = SPREAD_MIN;
+static bool detect = true;
 static struct { float min, max; double sum; uint32_t n; } st[ADC_CHANNELS + 1];
 static float last[ADC_CHANNELS + 1], lim_low[ADC_CHANNELS + 1], lim_upp[ADC_CHANNELS + 1];
 static bool lim_on, fail[ADC_CHANNELS + 1];
@@ -47,8 +48,9 @@ static bool connected(unsigned ch) { return conn[ch]; }
 
 static bool probe(unsigned ch)
 {
+    if (!detect) return true;             /* detection off: every channel counts as connected */
     spread[ch] = adc_probe(ch);
-    return spread[ch] < SPREAD_MIN;
+    return spread[ch] < (int)threshold;
 }
 
 static void sample(unsigned ch)
@@ -77,6 +79,8 @@ static void check_limits(scpi_t *s, unsigned ch)
 void dvm_reset(void)
 {
     averages = AVERAGES;
+    detect = true;
+    threshold = SPREAD_MIN;
     lim_on = false;
     for (unsigned c = 1; c <= ADC_CHANNELS; c++) { lim_low[c] = LIM_LOW; lim_upp[c] = LIM_UPP; fail[c] = false; }
 }
@@ -252,6 +256,25 @@ static void q_event(scpi_t *s)
 }
 static void q_evcount(scpi_t *s) { if (scpi_nparams(s, 0, 0)) scpi_out_int(s, (int32_t)ev_count); }
 
+/* Off: no probing at all (no pulls ever touch the pins), every channel is
+   treated as connected. Turning it back on re-detects within a few ticks. */
+static void c_det(scpi_t *s)
+{
+    bool v;
+    if (!scpi_nparams(s, 1, 1) || !scpi_bool(s, 0, &v)) return;
+    detect = v;
+    for (unsigned c = 1; c <= ADC_CHANNELS; c++) streak[c] = 0;
+    if (!v)
+        for (unsigned c = 1; c <= ADC_CHANNELS; c++) conn[c] = true;
+}
+static void q_det(scpi_t *s) { if (scpi_nparams(s, 0, 0)) scpi_out_int(s, detect); }
+static void c_thr(scpi_t *s)
+{
+    double x;
+    if (scpi_nparams(s, 1, 1) && scpi_number(s, 0, NULL, 50, 4000, SPREAD_MIN, &x)) threshold = (unsigned)x;
+}
+static void q_thr(scpi_t *s) { if (scpi_nparams(s, 0, 0)) scpi_out_int(s, (int32_t)threshold); }
+
 static void q_probe(scpi_t *s)
 {
     uint32_t m;
@@ -266,6 +289,8 @@ const scpi_cmd_t dvm_cmds[] = {
     {"ROUTe:CHANnel:CONNected?", q_conn}, {"ROUTe:CHANnel:CATalog?", q_cat},
     {"ROUTe:CHANnel:NAME?", q_name}, {"ROUTe:CHANnel:CHANges?", q_chg},
     {"ROUTe:CHANnel:EVENt?", q_event}, {"ROUTe:CHANnel:EVENt:COUNt?", q_evcount},
+    {"ROUTe:CHANnel:DETect[:STATe]", c_det}, {"ROUTe:CHANnel:DETect[:STATe]?", q_det},
+    {"ROUTe:CHANnel:DETect:THReshold", c_thr}, {"ROUTe:CHANnel:DETect:THReshold?", q_thr},
     {"DIAGnostic:CHANnel:PROBe?", q_probe},
     {"CALCulate:AVERage:MINimum?", q_smin}, {"CALCulate:AVERage:MAXimum?", q_smax},
     {"CALCulate:AVERage[:AVERage]?", q_savg}, {"CALCulate:AVERage:COUNt?", q_scnt},

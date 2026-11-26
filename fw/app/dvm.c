@@ -92,6 +92,16 @@ void dvm_measure(scpi_t *s)
         if (m & (1u << c)) scpi_out_num(s, connected(c) ? adc_read_dc(c, averages) * lsb : NAN);
 }
 
+/* Averaged ADC codes (0..4095) instead of volts; NaN where nothing is connected */
+static void q_raw(scpi_t *s)
+{
+    uint32_t m;
+    if (!chans(s, &m)) return;
+    if (adc_busy()) { scpi_error(s, -221); return; }
+    for (unsigned c = 1; c <= ADC_CHANNELS; c++)
+        if (m & (1u << c)) scpi_out_num(s, connected(c) ? adc_read_dc(c, averages) : NAN);
+}
+
 static void q_conn(scpi_t *s)
 {
     uint32_t m;
@@ -168,6 +178,7 @@ static void q_probe(scpi_t *s)
 }
 
 const scpi_cmd_t dvm_cmds[] = {
+    {"MEASure:VOLTage:RAW?", q_raw},
     {"ROUTe:CHANnel:CONNected?", q_conn}, {"ROUTe:CHANnel:CATalog?", q_cat},
     {"ROUTe:CHANnel:NAME?", q_name}, {"ROUTe:CHANnel:CHANges?", q_chg},
     {"DIAGnostic:CHANnel:PROBe?", q_probe},

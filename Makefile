@@ -23,8 +23,10 @@ test:
 	./build/test_scpi
 board-test:
 	.venv/bin/python tools/board_test.py
+dvm-test:
+	cd tools && ../.venv/bin/python dvm_test.py
 tui:
 	cd tui && odin build . -vet -strict-style -o:speed -out:nucleolab-tui
 clean:
 	rm -rf build tui/nucleolab-tui
-.PHONY: all flash restore test board-test tui clean
+.PHONY: all flash restore test board-test dvm-test tui clean

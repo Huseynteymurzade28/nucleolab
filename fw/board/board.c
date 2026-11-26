@@ -1,4 +1,5 @@
-/* NUCLEO-L452RE: 80 MHz, USART2 on the ST-LINK VCP, LD2 = PA5, B1 = PC13 */
+/* NUCLEO-L452RE-P: 80 MHz, USART2 on the ST-LINK VCP, user LED LD4 = PB13, B1 = PC13.
+   (The plain NUCLEO-L452RE has its LED on PA5, which is header pin D13 on the -P.) */
 #include "board.h"
 #include "stm32l4xx.h"
 
@@ -40,6 +41,8 @@ static void clock_init(void)
     SystemCoreClock = 80000000u;
 }
 
+#define LED_PIN 13u   /* PB13 */
+
 static void pin_mode(GPIO_TypeDef *g, unsigned n, unsigned mode)
 {
     g->MODER = (g->MODER & ~(3u << (2 * n))) | (mode << (2 * n));
@@ -51,10 +54,10 @@ void board_init(void)
     clock_init();
     SysTick_Config(SystemCoreClock / 1000u);
 
-    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOCEN;
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOBEN | RCC_AHB2ENR_GPIOCEN;
     RCC->APB1ENR1 |= RCC_APB1ENR1_USART2EN;
     (void)RCC->APB1ENR1;
-    pin_mode(GPIOA, 5, 1);
+    pin_mode(GPIOB, LED_PIN, 1);
     pin_mode(GPIOC, 13, 0);
     /* PC13 measured floating on this board, so use the internal pull-up. */
     GPIOC->PUPDR = (GPIOC->PUPDR & ~(3u << 26)) | (1u << 26);
@@ -102,8 +105,8 @@ void uart_write(const char *s, size_t n)
     }
 }
 
-void led_set(bool on) { GPIOA->BSRR = on ? 1u << 5 : 1u << 21; }
-bool led_get(void) { return GPIOA->ODR & (1u << 5); }
+void led_set(bool on) { GPIOB->BSRR = on ? 1u << LED_PIN : 1u << (LED_PIN + 16); }
+bool led_get(void) { return GPIOB->ODR & (1u << LED_PIN); }
 bool button_pressed(void) { return !(GPIOC->IDR & (1u << 13)); }
 bool clock_is_pll(void) { return (RCC->CFGR & RCC_CFGR_SWS) == RCC_CFGR_SWS_PLL; }
 bool clock_is_lse_locked(void) { return (RCC->BDCR & RCC_BDCR_LSERDY) && (RCC->CR & RCC_CR_MSIPLLEN); }

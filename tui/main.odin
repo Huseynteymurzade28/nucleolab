@@ -85,7 +85,9 @@ link_connect :: proc(l: ^Link) -> bool {
 link_ready :: proc(l: ^Link) -> bool {
 	clear(&l.rx)
 	l.busy = false
-	link_write(l, "\n") // ends any half line the board may still hold
+	// end any half line the board may still hold, and clear errors left in
+	// its queue by an earlier session, so SYST:ERR? reports only our own
+	link_write(l, "\n*CLS\n")
 	return true
 }
 
@@ -154,7 +156,7 @@ next_reply :: proc(l: ^Link) -> (string, bool) {
 		if len(rx) < total { return "", false }
 		if len(rx) > total && rx[total] == '\n' { total += 1 }
 		remove_range(&l.rx, 0, total)
-		return fmt.aprintf("<%d bayt ikili veri>", n), true
+		return fmt.aprintf("<%d bytes of binary data>", n), true
 	}
 	for b, i in rx {
 		if b != '\n' { continue }
@@ -218,9 +220,9 @@ on_poll :: proc(app: ^App, lines: []string) {
 		conn := ok && x < 1e30
 		if app.have && conn != c.conn {
 			if conn {
-				logf(app, "[#%06x]● CH%d %s (%s) takıldı[/]", GOOD, i + 1, NAMES[i], PINS[i])
+				logf(app, "[#%06x]● CH%d %s (%s) plugged in[/]", GOOD, i + 1, NAMES[i], PINS[i])
 			} else {
-				logf(app, "[#%06x]○ CH%d %s (%s) çıkarıldı[/]", WARM, i + 1, NAMES[i], PINS[i])
+				logf(app, "[#%06x]○ CH%d %s (%s) unplugged[/]", WARM, i + 1, NAMES[i], PINS[i])
 			}
 		}
 		if conn && (!c.conn || !app.have) { c.min, c.max = x, x }
@@ -246,7 +248,7 @@ on_user :: proc(app: ^App, cmd: string, lines: []string) {
 	if n > 0 && !strings.has_prefix(lines[n - 1], "0,") {
 		logf(app, "[#%06x]✗ %s[/]", WARM, lines[n - 1])
 	} else if n <= 1 {
-		logf(app, "[#%06x]✓ tamam[/]", DIM)
+		logf(app, "[#%06x]✓ ok[/]", DIM)
 	}
 }
 
@@ -300,17 +302,17 @@ draw :: proc(ui: ^hnoss.Ui, area_: hnoss.Rect, app: ^App, l: ^Link) {
 	head := hnoss.cut_top(&area, 1)
 	status: string
 	switch l.kind {
-	case .Bridge: status = fmt.tprintf("[#%06x]● köprü[/] %s", GOOD, dim(fmt.tprintf("127.0.0.1:5025 · %d ölçüm/s", app.rate)))
-	case .Serial: status = fmt.tprintf("[#%06x]● seri[/] %s", GOOD, dim(fmt.tprintf("%s · %d ölçüm/s", l.serial_path, app.rate)))
-	case .None:   status = fmt.tprintf("[#%06x]● bağlantı yok[/] %s", WARM, dim("kart / köprü bekleniyor…"))
+	case .Bridge: status = fmt.tprintf("[#%06x]● bridge[/] %s", GOOD, dim(fmt.tprintf("127.0.0.1:5025 · %d reads/s", app.rate)))
+	case .Serial: status = fmt.tprintf("[#%06x]● serial[/] %s", GOOD, dim(fmt.tprintf("%s · %d reads/s", l.serial_path, app.rate)))
+	case .None:   status = fmt.tprintf("[#%06x]● offline[/] %s", WARM, dim("waiting for board / bridge…"))
 	}
 	if app.vdda > 0 { status = fmt.tprintf("%s %s", dim(fmt.tprintf("VDDA %.3f V ·", app.vdda)), status) }
 	hnoss.label(ui, hnoss.cut_right(&head, 64), status, align = .Right, wrap = .Clip)
-	hnoss.label(ui, head, fmt.tprintf("[b]NucleoLab[/] %s", dim("çok kanallı voltmetre · SCPI")), wrap = .Clip)
+	hnoss.label(ui, head, fmt.tprintf("[b]NucleoLab[/] %s", dim("multi-channel voltmeter · SCPI")), wrap = .Clip)
 
 	foot := hnoss.cut_bottom(&area, 1)
 	k := fmt.tprintf("#%06x", ACCENT)
-	hnoss.label(ui, foot, fmt.tprintf("[%s]Tab[/] kanal seç  [%s]↑↓[/] komut geçmişi  [%s]Enter[/] gönder  [%s]Esc[/] çık", k, k, k, k), wrap = .Clip)
+	hnoss.label(ui, foot, fmt.tprintf("[%s]Tab[/] select channel  [%s]↑↓[/] history  [%s]Enter[/] send  [%s]Esc[/] quit", k, k, k, k), wrap = .Clip)
 
 	rows := hnoss.split(area, .Vertical, [?]hnoss.Size{CHANNELS + 3, hnoss.fill()})
 	draw_channels(ui, rows[0], app)
@@ -320,9 +322,9 @@ draw :: proc(ui: ^hnoss.Ui, area_: hnoss.Rect, app: ^App, l: ^Link) {
 }
 
 draw_channels :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
-	inner := hnoss.box(ui, r, fmt.tprintf("[b]Kanallar[/] %s", dim("otomatik algılama")))
+	inner := hnoss.box(ui, r, fmt.tprintf("[b]Channels[/] %s", dim("auto-detect")))
 	hdr := hnoss.cut_top(&inner, 1)
-	hnoss.label(ui, hdr, dim("   KANAL PİN    DURUM          GERİLİM    "), wrap = .Clip)
+	hnoss.label(ui, hdr, dim("  CHANNEL PIN    STATE            VOLTAGE"), wrap = .Clip)
 	vmax := app.vdda if app.vdda > 0 else 3.3
 	for i in 0 ..< CHANNELS {
 		row := hnoss.cut_top(&inner, 1)
@@ -332,8 +334,8 @@ draw_channels :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
 		state: string
 		switch {
 		case !app.have:          state = dim("…")
-		case c.conn:             state = fmt.tprintf("[#%06x]● bağlı[/]", GOOD)
-		case:                    state = dim("○ boş")
+		case c.conn:             state = fmt.tprintf("[#%06x]● connected[/]", GOOD)
+		case:                    state = dim("○ empty")
 		}
 		value := fmt.tprintf("[b]%.3f V[/]", c.volts) if c.conn else dim("— V")
 		hnoss.label(ui, hnoss.cut_left(&row, 2), mark)
@@ -359,9 +361,9 @@ draw_selected :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
 	if c.conn {
 		big_text(ui, top, fmt.tprintf("%.3fV", c.volts), ACCENT)
 		mm := hnoss.cut_top(&inner, 1)
-		hnoss.label(ui, mm, dim(fmt.tprintf("min %.3f V · max %.3f V · aralık %.3f V", c.min, c.max, c.max - c.min)), align = .Center, wrap = .Clip)
+		hnoss.label(ui, mm, dim(fmt.tprintf("min %.3f V · max %.3f V · span %.3f V", c.min, c.max, c.max - c.min)), align = .Center, wrap = .Clip)
 	} else {
-		msg := "kanal boş · bir sinyal bağlayın, otomatik algılanır"
+		msg := "empty · plug a signal in, it is detected automatically"
 		hnoss.label(ui, hnoss.center(top, len(msg), 1), dim(msg), align = .Center, wrap = .Clip)
 		hnoss.cut_top(&inner, 1)
 	}
@@ -373,7 +375,7 @@ draw_selected :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
 }
 
 draw_console :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
-	inner := hnoss.box(ui, r, "[b]SCPI konsolu[/]", {focused = true})
+	inner := hnoss.box(ui, r, "[b]SCPI console[/]", {focused = true})
 	line := hnoss.cut_bottom(&inner, 1)
 	hnoss.label(ui, hnoss.cut_left(&line, 2), fmt.tprintf("[#%06x]›[/]", ACCENT))
 	hnoss.focus(ui, &app.cmd)
@@ -392,7 +394,7 @@ main :: proc() {
 	app.log.max_lines = 500
 	app.rate_tick = time.tick_now()
 	start_tick = time.tick_now()
-	logf(&app, "%s", dim("Örnekler: MEAS:VOLT? (@1,4:6) · ROUT:CHAN:CONN? · OUTP ON · SYST:HELP:HEAD?"))
+	logf(&app, "%s", dim("Try: MEAS:VOLT? (@1,4:6) · ROUT:CHAN:CAT? · ROUT:CHAN:CONN? · SYST:HELP:HEAD?"))
 
 	term, err := hnoss.init()
 	if err != .None {
@@ -400,7 +402,7 @@ main :: proc() {
 		os.exit(1)
 	}
 	defer hnoss.deinit(&term)
-	hnoss.set_title(&term, "NucleoLab voltmetre")
+	hnoss.set_title(&term, "NucleoLab voltmeter")
 
 	events: []hnoss.Event
 	last_try: time.Tick
@@ -413,9 +415,9 @@ main :: proc() {
 		}
 		if link.kind != was {
 			switch link.kind {
-			case .Bridge: logf(&app, "[#%06x]köprüye bağlandı (127.0.0.1:5025)[/]", GOOD)
-			case .Serial: logf(&app, "[#%06x]seri porta bağlandı (%s)[/]", GOOD, path)
-			case .None:   logf(&app, "[#%06x]bağlantı koptu[/]", WARM); app.have = false
+			case .Bridge: logf(&app, "[#%06x]connected to bridge (127.0.0.1:5025)[/]", GOOD)
+			case .Serial: logf(&app, "[#%06x]connected to serial port (%s)[/]", GOOD, path)
+			case .None:   logf(&app, "[#%06x]connection lost[/]", WARM); app.have = false
 			}
 			was = link.kind
 		}
@@ -454,7 +456,7 @@ main :: proc() {
 				if len(app.history) == 0 || app.history[len(app.history) - 1] != cmd {
 					append(&app.history, strings.clone(cmd))
 				}
-				if link.kind == .None { logf(&app, "[#%06x]bağlantı yok, bağlanınca gönderilecek[/]", WARM) }
+				if link.kind == .None { logf(&app, "[#%06x]offline, will send once connected[/]", WARM) }
 			}
 			app.hist_pos = len(app.history)
 			hnoss.input_set(&app.cmd, "")

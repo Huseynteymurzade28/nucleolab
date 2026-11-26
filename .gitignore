@@ -4,3 +4,7 @@ backup/
 __pycache__/
 *.pyc
 tui/nucleolab-tui
+host/panel_v1.html
+prototype/pot-adc/zig-out/
+prototype/pot-adc/.zig-cache/
+prototype/pot-adc/tui/pot-tui

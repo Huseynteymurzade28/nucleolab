@@ -1,0 +1,2 @@
+# The web panel is one self-contained page; keep it out of the language bar
+host/*.html linguist-detectable=false

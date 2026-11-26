@@ -30,6 +30,18 @@ static struct { float min, max; double sum; uint32_t n; } st[ADC_CHANNELS + 1];
 static float last[ADC_CHANNELS + 1], lim_low[ADC_CHANNELS + 1], lim_upp[ADC_CHANNELS + 1];
 static bool lim_on, fail[ADC_CHANNELS + 1];
 
+/* Event log: channel, what happened, millis(); the oldest is dropped when full */
+enum { EV_UNPLUGGED, EV_PLUGGED, EV_LIMIT_FAIL, EV_LIMIT_OK };
+#define EV_MAX 16u
+static struct { uint8_t ch, what; uint32_t ms; } ev[EV_MAX];
+static unsigned ev_head, ev_count;
+static void log_event(unsigned ch, unsigned what)
+{
+    if (ev_count == EV_MAX) { ev_head = (ev_head + 1) % EV_MAX; ev_count--; }
+    unsigned i = (ev_head + ev_count++) % EV_MAX;
+    ev[i].ch = (uint8_t)ch; ev[i].what = (uint8_t)what; ev[i].ms = millis();
+}
+
 static bool adc_busy(void) { return scope_state() == SC_ARMED; }
 static bool connected(unsigned ch) { return conn[ch]; }
 
@@ -52,7 +64,9 @@ static void sample(unsigned ch)
 /* Limit state from the latest background sample; QUES bit 10 follows it */
 static void check_limits(scpi_t *s, unsigned ch)
 {
+    bool was = fail[ch];
     fail[ch] = lim_on && conn[ch] && (last[ch] < lim_low[ch] || last[ch] > lim_upp[ch]);
+    if (fail[ch] != was) log_event(ch, fail[ch] ? EV_LIMIT_FAIL : EV_LIMIT_OK);
     bool any = false;
     for (unsigned c = 1; c <= ADC_CHANNELS; c++) any |= fail[c];
     if (any && !(s->ques.cond & QUES_LIMIT)) s->ques.event |= QUES_LIMIT;
@@ -85,6 +99,7 @@ void dvm_poll(scpi_t *s)
         conn[turn] = now;
         changes++;
         s->oper.event |= OPER_CHAN;
+        log_event(turn, now ? EV_PLUGGED : EV_UNPLUGGED);
         st[turn].n = 0;                   /* a new connection starts new statistics */
     } else if (now == conn[turn]) {
         streak[turn] = 0;
@@ -223,6 +238,20 @@ static void q_lfail(scpi_t *s)
             if (m & (1u << c)) scpi_out_int(s, fail[c]);
 }
 
+/* Oldest logged event as <channel>,<what>,<ms since boot>; 0,0,0 when empty.
+   what: 0 unplugged, 1 plugged in, 2 out of limits, 3 back within limits */
+static void q_event(scpi_t *s)
+{
+    if (!scpi_nparams(s, 0, 0)) return;
+    if (!ev_count) { scpi_out_int(s, 0); scpi_out_int(s, 0); scpi_out_int(s, 0); return; }
+    scpi_out_int(s, ev[ev_head].ch);
+    scpi_out_int(s, ev[ev_head].what);
+    scpi_out_int(s, (int32_t)ev[ev_head].ms);
+    ev_head = (ev_head + 1) % EV_MAX;
+    ev_count--;
+}
+static void q_evcount(scpi_t *s) { if (scpi_nparams(s, 0, 0)) scpi_out_int(s, (int32_t)ev_count); }
+
 static void q_probe(scpi_t *s)
 {
     uint32_t m;
@@ -236,6 +265,7 @@ const scpi_cmd_t dvm_cmds[] = {
     {"MEASure:VOLTage:RAW?", q_raw},
     {"ROUTe:CHANnel:CONNected?", q_conn}, {"ROUTe:CHANnel:CATalog?", q_cat},
     {"ROUTe:CHANnel:NAME?", q_name}, {"ROUTe:CHANnel:CHANges?", q_chg},
+    {"ROUTe:CHANnel:EVENt?", q_event}, {"ROUTe:CHANnel:EVENt:COUNt?", q_evcount},
     {"DIAGnostic:CHANnel:PROBe?", q_probe},
     {"CALCulate:AVERage:MINimum?", q_smin}, {"CALCulate:AVERage:MAXimum?", q_smax},
     {"CALCulate:AVERage[:AVERage]?", q_savg}, {"CALCulate:AVERage:COUNt?", q_scnt},

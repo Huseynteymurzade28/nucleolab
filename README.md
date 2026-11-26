@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/tui.svg" alt="NucleoLab TUI: six channels with plug detection, the selected one in big digits with statistics, limits and history, and a SCPI console">
+  <img src="docs/tui.png" alt="NucleoLab TUI: a potentiometer on A1 turned by hand draws its history as a wave; six channels with plug detection and a SCPI console">
 </p>
 
 ## Features
@@ -36,7 +36,8 @@ For the web panel and PyVISA: `python3 -m venv .venv && .venv/bin/pip install -r
 > Inputs take 0–3.3 V only. Pins are set for the **-P** board. On a plain NUCLEO-L452RE, A2 / A3 and the LED sit elsewhere: see [docs/hardware.md](docs/hardware.md).
 
 <p align="center">
-  <img src="docs/panel.png" width="820" alt="Web panel: live 1 kHz sine on the scope with measurements, generator and scope settings">
+  <img src="docs/panel.png" width="49%" alt="Web panel, scope: live 1 kHz sine with measurements">
+  <img src="docs/panel-spectrum.png" width="49%" alt="Web panel, spectrum: a 1 kHz square wave, its odd harmonics and a waterfall">
 </p>
 
 ## Docs

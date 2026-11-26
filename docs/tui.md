@@ -41,6 +41,12 @@ Polls go out ~20 times a second as one line: `MEAS:VOLT? (@1:6);:SYST:VDDA?;:CAL
 ./run.sh     # http://127.0.0.1:8080
 ```
 
-Scope, spectrum and Bode views with cursors, CSV export and a SCPI console with tab completion. The generator, scope and Bode settings are on the right. The page is a single file, `host/panel.html`, served by `host/server.py`. The UI text is in Turkish.
+Scope, spectrum and Bode views with cursors, CSV export and a SCPI console with tab completion. The generator, scope and Bode settings are on the right. The page is a single file, `host/panel.html`, served by `host/server.py`.
+
+![Scope: a 1 kHz sine from the generator, read back internally](panel.png)
+
+![Spectrum: a 1 kHz square wave shows its odd harmonics; the waterfall below keeps the recent past](panel-spectrum.png)
+
+A **Drawn** waveform comes from "Draw a waveform": sketch one period with the mouse (or start from heartbeat, staircase or sinc), and the board plays it at the set frequency.
 
 When a PyVISA script (`host/demo_pyvisa.py`) talks to port 5025, the panel switches to "remote control" and stops polling until it's done.

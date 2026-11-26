@@ -13,7 +13,7 @@ class Instrument:
 
     def _open(self):
         path = self.port or next(iter(glob.glob("/dev/serial/by-id/*STLink*")), None)
-        if not path: raise OSError("ST-LINK seri portu bulunamadı")
+        if not path: raise OSError("ST-LINK serial port not found")
         self.ser = serial.Serial(path, 921600, timeout=.05, exclusive=True)
         self.ser.write(b"\n"); time.sleep(.6); self.ser.reset_input_buffer()
 
@@ -25,7 +25,7 @@ class Instrument:
             buf, end = bytearray(), time.monotonic() + timeout
             while not buf.endswith(tag):
                 buf += self.ser.read(max(1, self.ser.in_waiting))
-                if time.monotonic() > end: raise TimeoutError("cihaz yanıt vermedi")
+                if time.monotonic() > end: raise TimeoutError("the board did not answer")
             return bytes(buf[:-len(tag)])
         except (OSError, serial.SerialException):
             if self.ser: self.ser.close()
@@ -133,7 +133,7 @@ async def ws_handler(req):
                     if "arb" in d:      # waveform drawn in the panel
                         codes = [int(c) for c in d["arb"]]
                         if not (2 <= len(codes) <= 4096 and all(0 <= c <= 4095 for c in codes)):
-                            raise ValueError("geçersiz dalga verisi")
+                            raise ValueError("invalid waveform data")
                         raw = struct.pack(f"<{len(codes)}H", *codes); size = str(len(raw))
                         await ins.txn(b"SOUR:DATA:ARB #%d%s" % (len(size), size.encode()) + raw)
                         d["line"] = "SOUR:FUNC ARB"
@@ -161,7 +161,7 @@ async def main():
     print("Cihaz:", (await ins.txn(b"*RST;*CLS;*IDN?")).decode().strip())
     loop = float((await ins.txn(b"DIAG:LOOP?")).decode().split(",")[0])
     ch = 1 if loop < .03 else 3
-    print("Jumper PA4-PA0:", "takılı, kanal 1" if ch == 1 else "yok, dahili kanal 3 kullanılıyor")
+    print("Jumper PA4-PA0:", "present, using channel 1" if ch == 1 else "absent, using internal channel 3")
     await ins.txn(b"ACQ:CHAN %d;POIN 2048;SRAT 5E5;:SOUR:FREQ 1000;:OUTP ON" % ch)
     app = web.Application(); app["ins"] = ins
     app.router.add_get("/", lambda r: web.FileResponse(os.path.join(HERE, "panel.html"), headers={"Cache-Control": "no-cache"}))

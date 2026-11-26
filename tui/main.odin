@@ -194,6 +194,11 @@ App :: struct {
 	last_poll: time.Tick,
 	last_cfg:  time.Tick,
 	lim_on:    bool,
+	// CSV recording (F2)
+	rec:       ^os.File,
+	rec_path:  string,
+	rec_rows:  int,
+	rec_start: time.Tick,
 	polls:     int,
 	rate:      int,
 	rate_tick: time.Tick,
@@ -243,6 +248,43 @@ on_poll :: proc(app: ^App, lines: []string) {
 	}
 	app.have = true
 	app.polls += 1
+	if app.rec != nil { record_row(app) }
+}
+
+// F2: start / stop writing every reading to nucleolab-<unix time>.csv
+toggle_record :: proc(app: ^App) {
+	if app.rec != nil {
+		os.close(app.rec)
+		app.rec = nil
+		logf(app, "[#%06x]■ recording stopped[/] %s", ACCENT, dim(fmt.tprintf("%d rows in %s", app.rec_rows, app.rec_path)))
+		return
+	}
+	delete(app.rec_path)
+	app.rec_path = fmt.aprintf("nucleolab-%d.csv", time.time_to_unix(time.now()))
+	f, err := os.create(app.rec_path)
+	if err != nil {
+		logf(app, "[#%06x]✗ cannot create %s: %v[/]", WARM, app.rec_path, err)
+		return
+	}
+	app.rec, app.rec_rows, app.rec_start = f, 0, time.tick_now()
+	header := strings.builder_make(context.temp_allocator)
+	strings.write_string(&header, "time_s")
+	for i in 0 ..< CHANNELS { fmt.sbprintf(&header, ",ch%d_%s_V", i + 1, NAMES[i]) }
+	strings.write_string(&header, ",vdda_V\n")
+	os.write_string(f, strings.to_string(header))
+	logf(app, "[#%06x]● recording to %s[/]", WARM, app.rec_path)
+}
+
+// one row per poll; an empty cell where nothing is plugged in
+record_row :: proc(app: ^App) {
+	row := strings.builder_make(context.temp_allocator)
+	fmt.sbprintf(&row, "%.3f", time.duration_seconds(time.tick_since(app.rec_start)))
+	for c in app.ch {
+		if c.conn { fmt.sbprintf(&row, ",%.4f", c.volts) } else { strings.write_byte(&row, ',') }
+	}
+	fmt.sbprintf(&row, ",%.4f\n", app.vdda)
+	os.write_string(app.rec, strings.to_string(row))
+	app.rec_rows += 1
 }
 
 // One entry of the board's event log: "<channel>,<what>,<ms since boot>"
@@ -345,13 +387,14 @@ draw :: proc(ui: ^hnoss.Ui, area_: hnoss.Rect, app: ^App, l: ^Link) {
 	case .Serial: status = fmt.tprintf("[#%06x]● serial[/] %s", GOOD, dim(fmt.tprintf("%s · %d reads/s", l.serial_path, app.rate)))
 	case .None:   status = fmt.tprintf("[#%06x]● offline[/] %s", WARM, dim("waiting for board / bridge…"))
 	}
+	if app.rec != nil { status = fmt.tprintf("[b #%06x]● REC %d[/] %s", WARM, app.rec_rows, status) }
 	if app.vdda > 0 { status = fmt.tprintf("%s %s", dim(fmt.tprintf("VDDA %.3f V ·", app.vdda)), status) }
-	hnoss.label(ui, hnoss.cut_right(&head, 64), status, align = .Right, wrap = .Clip)
+	hnoss.label(ui, hnoss.cut_right(&head, 76), status, align = .Right, wrap = .Clip)
 	hnoss.label(ui, head, fmt.tprintf("[b]NucleoLab[/] %s", dim("multi-channel voltmeter · SCPI")), wrap = .Clip)
 
 	foot := hnoss.cut_bottom(&area, 1)
 	k := fmt.tprintf("#%06x", ACCENT)
-	hnoss.label(ui, foot, fmt.tprintf("[%s]Tab[/] select channel  [%s]↑↓[/] history  [%s]Enter[/] send  [%s]Esc[/] quit", k, k, k, k), wrap = .Clip)
+	hnoss.label(ui, foot, fmt.tprintf("[%s]Tab[/] select channel  [%s]↑↓[/] history  [%s]Enter[/] send  [%s]F2[/] %s  [%s]Esc[/] quit", k, k, k, k, "stop recording" if app.rec != nil else "record CSV", k), wrap = .Clip)
 
 	rows := hnoss.split(area, .Vertical, [?]hnoss.Size{CHANNELS + 3, hnoss.fill()})
 	draw_channels(ui, rows[0], app)
@@ -516,6 +559,8 @@ main :: proc() {
 			switch {
 			case hnoss.is_key(ev, .Esc) || hnoss.is_char(ev, 'c', {.Ctrl}):
 				break loop
+			case hnoss.is_key(ev, .F2):
+				toggle_record(&app)
 			case hnoss.is_key(ev, .Tab):
 				app.sel = (app.sel + 1) % CHANNELS
 			case hnoss.is_key(ev, .Back_Tab):
@@ -533,5 +578,6 @@ main :: proc() {
 		events = hnoss.poll_events(&term, 16)
 		if term.error != .None { break }
 	}
+	if app.rec != nil { os.close(app.rec) }
 	link_close(&link)
 }

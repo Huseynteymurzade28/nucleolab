@@ -194,6 +194,7 @@ App :: struct {
 	last_poll: time.Tick,
 	last_cfg:  time.Tick,
 	lim_on:    bool,
+	help:      bool, // F1 overlay
 	// CSV recording (F2)
 	rec:       ^os.File,
 	rec_path:  string,
@@ -394,7 +395,7 @@ draw :: proc(ui: ^hnoss.Ui, area_: hnoss.Rect, app: ^App, l: ^Link) {
 
 	foot := hnoss.cut_bottom(&area, 1)
 	k := fmt.tprintf("#%06x", ACCENT)
-	hnoss.label(ui, foot, fmt.tprintf("[%s]Tab[/] select channel  [%s]↑↓[/] history  [%s]Enter[/] send  [%s]F2[/] %s  [%s]Esc[/] quit", k, k, k, k, "stop recording" if app.rec != nil else "record CSV", k), wrap = .Clip)
+	hnoss.label(ui, foot, fmt.tprintf("[%s]F1[/] help  [%s]Tab[/] channel  [%s]Enter[/] send  [%s]F2[/] %s  [%s]Esc[/] quit", k, k, k, k, "stop recording" if app.rec != nil else "record CSV", k), wrap = .Clip)
 
 	rows := hnoss.split(area, .Vertical, [?]hnoss.Size{CHANNELS + 3, hnoss.fill()})
 	draw_channels(ui, rows[0], app)
@@ -461,6 +462,44 @@ draw_selected :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
 		grad := [?]hnoss.Rgb{hnoss.hex(GOOD), hnoss.hex(ACCENT), hnoss.hex(WARM)}
 		hnoss.graph(ui, inner, c.hist[:], {max_value = vmax, gradient = grad[:]})
 	}
+}
+
+HELP_KEYS :: [?][2]string{
+	{"Enter", "send the command in the console"},
+	{"↑ ↓", "command history"},
+	{"Tab / Shift+Tab", "select channel"},
+	{"F1", "this help"},
+	{"F2", "start / stop CSV recording"},
+	{"Esc", "close help · quit"},
+}
+HELP_CMDS :: [?][2]string{
+	{"MEAS:VOLT? (@1,4:6)", "volts; 9.91E+37 = nothing plugged in"},
+	{"ROUT:CHAN:CAT?", "connected channels"},
+	{"CALC:LIM:UPP 2.5,(@1)", "upper limit for CH1 (LOW likewise)"},
+	{"CALC:LIM ON", "check limits, alarms turn red"},
+	{"CALC:AVER? (@1:6)", "mean since plug-in (MIN? MAX? COUN?)"},
+	{"VOLT:AVER:COUN 16", "samples per MEAS:VOLT?"},
+	{"ROUT:CHAN:DET OFF", "no plug detection, all connected"},
+	{"SYST:HELP:HEAD?", "every command the board knows"},
+}
+
+draw_help :: proc(ui: ^hnoss.Ui, area: hnoss.Rect, app: ^App) {
+	h := len(HELP_KEYS) + len(HELP_CMDS) + 3
+	inner := hnoss.modal(ui, hnoss.center(area, 72, h + 2), &app.help, "[b]Help[/]")
+	row := 0
+	line :: proc(ui: ^hnoss.Ui, inner: hnoss.Rect, row: ^int, left, right: string, width: int) {
+		r := hnoss.Rect{inner.x + 1, inner.y + row^, inner.width - 2, 1}
+		hnoss.label(ui, hnoss.cut_left(&r, width), left, wrap = .Clip)
+		hnoss.label(ui, r, dim(right), wrap = .Clip)
+		row^ += 1
+	}
+	hnoss.label(ui, {inner.x + 1, inner.y, inner.width - 2, 1}, fmt.tprintf("[b #%06x]Keys[/]", ACCENT))
+	row += 1
+	for k in HELP_KEYS { line(ui, inner, &row, fmt.tprintf("[b]%s[/]", k[0]), k[1], 18) }
+	row += 1
+	hnoss.label(ui, {inner.x + 1, inner.y + row, inner.width - 2, 1}, fmt.tprintf("[b #%06x]SCPI[/]", ACCENT))
+	row += 1
+	for c in HELP_CMDS { line(ui, inner, &row, c[0], c[1], 26) }
 }
 
 draw_console :: proc(ui: ^hnoss.Ui, r: hnoss.Rect, app: ^App) {
@@ -540,6 +579,7 @@ main :: proc() {
 		f := hnoss.begin_frame(&term)
 		ui := hnoss.ui(f, events, hnoss.ODLAR_YURDU_THEME)
 		draw(ui, f.area, &app, &link)
+		if app.help { draw_help(ui, f.area, &app) }
 
 		if app.cmd.submitted {
 			cmd := strings.trim_space(hnoss.input_text(&app.cmd))
@@ -559,6 +599,8 @@ main :: proc() {
 			switch {
 			case hnoss.is_key(ev, .Esc) || hnoss.is_char(ev, 'c', {.Ctrl}):
 				break loop
+			case hnoss.is_key(ev, .F1):
+				app.help = !app.help
 			case hnoss.is_key(ev, .F2):
 				toggle_record(&app)
 			case hnoss.is_key(ev, .Tab):
